@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="Allen Hostel cleaning inspections for supervisors and managers."
+    />
+    <meta name="theme-color" content="#f3f4ee" />
+    <title>Allen Cleaning Supervisor</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/app.css" />
+  </head>
+  <body class="app-body">
+    <a class="skip-link" href="#app">Skip to main content</a>
+
+    <header class="topbar">
+      <div class="topbar-inner">
+        <a class="brand" href="#/" aria-label="Allen Cleaning Supervisor home">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/></svg>
+          </span>
+          <span class="brand-copy">
+            <strong>Allen Hostel</strong>
+            <span>Cleaning supervisor</span>
+          </span>
+        </a>
+
+        <nav class="topnav" aria-label="Main navigation">
+          <a href="#/" data-nav="overview">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10.5 9-7.5 9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></svg>
+            <span>Overview</span>
+          </a>
+          <a href="#/inspections" data-nav="inspections">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 7 2 2 4-4"/><path d="m3 17 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>
+            <span>Inspections</span>
+          </a>
+        </nav>
+
+        <div class="topbar-actions">
+          <div class="user-menu" id="user-menu">
+            <button
+              class="user-chip"
+              id="user-menu-button"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              aria-controls="user-dropdown"
+            >
+              <span class="avatar" id="topbar-avatar" aria-hidden="true">··</span>
+              <span class="user-chip-copy">
+                <strong id="topbar-name">Loading</strong>
+                <small id="topbar-role">Account</small>
+              </span>
+              <svg class="chevron" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>
+            </button>
+            <div class="user-dropdown" id="user-dropdown" role="menu" hidden>
+              <div class="dropdown-account">
+                <span id="dropdown-avatar" class="avatar" aria-hidden="true">··</span>
+                <div>
+                  <strong id="dropdown-name">Loading</strong>
+                  <small id="dropdown-username"></small>
+                </div>
+                <span class="badge badge-neutral" id="dropdown-role">Account</span>
+              </div>
+              <div class="dropdown-divider"></div>
+              <button class="dropdown-item" type="button" role="menuitem" data-action="password">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7.5" cy="15.5" r="3.5"/><path d="m10 13 8-8"/><path d="m15 6 3 3"/><path d="m18 3 3 3"/></svg>
+                Change password
+              </button>
+              <button class="dropdown-item" type="button" role="menuitem" data-action="logout">
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+                Sign out
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <main id="app" class="app-main" tabindex="-1">
+      <div class="loading-state">
+        <span class="spinner" aria-hidden="true"></span>
+        <span>Loading your workspace…</span>
+      </div>
+    </main>
+
+    <nav class="bottom-nav" aria-label="Mobile navigation">
+      <a href="#/" data-nav="overview">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 10.5 9-7.5 9 7.5"/><path d="M5 9.5V21h14V9.5"/><path d="M9 21v-6h6v6"/></svg>
+        <span>Overview</span>
+      </a>
+      <a href="#/inspections" data-nav="inspections">
+        <svg width="21" height="21" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 7 2 2 4-4"/><path d="m3 17 2 2 4-4"/><path d="M13 6h8"/><path d="M13 12h8"/><path d="M13 18h8"/></svg>
+        <span>Inspections</span>
+      </a>
+    </nav>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+    <noscript>
+      <div class="noscript">This app needs JavaScript enabled to run cleaning inspections.</div>
+    </noscript>
+
+    <script type="module" src="/js/app.js"></script>
+  </body>
+</html>

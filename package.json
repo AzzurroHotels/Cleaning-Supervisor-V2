@@ -1,8 +1,24 @@
 {
-  "name": "allen-cleaning-checklist",
-  "version": "1.0.0",
+  "name": "allen-cleaning-supervisor",
+  "version": "2.0.0",
   "private": true,
-  "description": "Frontend-only Allen Hostel cleaning inspection checklist",
-  "scripts": { "test": "node verify.cjs" },
-  "engines": { "node": ">=18" }
+  "description": "Allen Hostel cleaning inspection app with supervisor and manager roles",
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js",
+    "test": "node --test tests/*.test.js",
+    "users": "node scripts/manage-users.js"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "dependencies": {
+    "better-sqlite3": "11.8.1",
+    "compression": "1.8.2",
+    "dotenv": "17.2.3",
+    "express": "4.22.3",
+    "helmet": "8.1.0",
+    "multer": "2.4.0"
+  }
 }

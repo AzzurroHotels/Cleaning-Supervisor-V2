@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta
+      name="description"
+      content="Sign in to the Allen Hostel cleaning supervisor checklist."
+    />
+    <meta name="theme-color" content="#24593f" />
+    <title>Sign in · Allen Cleaning Supervisor</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/css/base.css" />
+    <link rel="stylesheet" href="/css/login.css" />
+  </head>
+  <body class="auth-page">
+    <a class="skip-link" href="#authMain">Skip to sign in</a>
+
+    <div class="auth-shell">
+      <aside class="auth-brand" aria-label="About this app">
+        <div class="auth-orbit auth-orbit-one" aria-hidden="true"></div>
+        <div class="auth-orbit auth-orbit-two" aria-hidden="true"></div>
+        <div class="auth-orbit auth-orbit-three" aria-hidden="true"></div>
+
+        <div class="auth-brand-inner">
+          <div class="brand-row">
+            <span class="brand-mark" aria-hidden="true">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/></svg>
+            </span>
+            <span class="brand-copy">
+              <strong>Allen Hostel</strong>
+              <span>Cleaning supervisor</span>
+            </span>
+          </div>
+
+          <div class="auth-pitch">
+            <p class="auth-eyebrow">Daily cleanliness assurance</p>
+            <h1>Every room.<br />Every shift.<br /><em>Accountable.</em></h1>
+            <p class="auth-lede">
+              Run the full hostel checklist, capture evidence for anything that fails, and give
+              management a clear record of what was cleaned.
+            </p>
+          </div>
+
+          <ul class="auth-features">
+            <li>
+              <span class="feature-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 20v-8a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v8"/><path d="M4 10V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v4"/><path d="M12 4v6"/><path d="M2 18h20"/></svg>
+              </span>
+              <span><strong>54 areas covered</strong>28 rooms, 17 shared facilities and all common spaces</span>
+            </li>
+            <li>
+              <span class="feature-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3Z"/><circle cx="12" cy="13" r="3"/></svg>
+              </span>
+              <span><strong>Evidence built in</strong>Photos and videos stay attached to every failure</span>
+            </li>
+            <li>
+              <span class="feature-icon">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
+              </span>
+              <span><strong>Live management view</strong>Pass rates, failures and inspection history in one place</span>
+            </li>
+          </ul>
+
+          <p class="auth-brand-foot">Allen Hostel · Cleaning operations</p>
+        </div>
+      </aside>
+
+      <main class="auth-main" id="authMain">
+        <div class="auth-mobile-brand">
+          <span class="brand-mark" aria-hidden="true">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M11 20A7 7 0 0 1 9.8 6.1C15.5 5 17 4.48 19 2c1 2 2 4.18 2 8 0 5.5-4.78 10-10 10Z"/><path d="M2 21c0-3 1.85-5.36 5.08-6C9.5 14.52 12 13 13 12"/></svg>
+          </span>
+          <span class="brand-copy"><strong>Allen Hostel</strong><span>Cleaning supervisor</span></span>
+        </div>
+
+        <div class="auth-card" id="auth-card" aria-busy="true">
+          <div class="auth-loading">
+            <div class="skeleton" style="height: 18px; width: 35%"></div>
+            <div class="skeleton" style="height: 38px; width: 78%"></div>
+            <div class="skeleton" style="height: 15px; width: 92%"></div>
+            <div class="skeleton auth-loading-box"></div>
+            <div class="skeleton auth-loading-box"></div>
+            <div class="skeleton" style="height: 46px; width: 100%"></div>
+            <span class="sr-only">Loading sign in</span>
+          </div>
+        </div>
+
+        <p class="auth-note">
+          Authorised staff only. If you need an account, speak to your manager.
+        </p>
+      </main>
+    </div>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="false"></div>
+
+    <noscript>
+      <div class="noscript">This app needs JavaScript enabled to sign in and run inspections.</div>
+    </noscript>
+
+    <script type="module" src="/js/login.js"></script>
+  </body>
+</html>

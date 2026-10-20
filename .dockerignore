@@ -1,0 +1,15 @@
+node_modules
+data
+uploads
+.git
+.env
+.env.*
+!.env.example
+tests
+coverage
+test-results
+playwright-report
+*.md
+*.log
+.DS_Store
+ui-check.mjs
