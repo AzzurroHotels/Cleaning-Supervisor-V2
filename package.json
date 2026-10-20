@@ -1,0 +1,8 @@
+{
+  "name": "allen-cleaning-checklist",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Frontend-only Allen Hostel cleaning inspection checklist",
+  "scripts": { "test": "node verify.cjs" },
+  "engines": { "node": ">=18" }
+}
