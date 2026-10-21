@@ -10,6 +10,10 @@ Deployed on Vercel (static files plus `api/` functions) with a private Vercel Bl
 - Deploy: `npx vercel deploy --prod`. Browser Blob client is bundled in `vendor/blob-client.js` (rebuild with `npx esbuild node_modules/@vercel/blob/dist/client.js --bundle --format=esm --minify --outfile=vendor/blob-client.js` after upgrading `@vercel/blob`).
 - Submitting requires the inspector login; viewing requires the management password. Changing either inspector value signs everyone out.
 
+## Deploying
+
+The Vercel project `allen-cleaning-checklist` is connected to the GitHub fork `VEDANSHSHAH/Cleaning-Supervisor-V2`: every push to its `main` deploys to production automatically. (The AzzurroHotels repo itself is not connected, because Vercel could not install its GitHub app on another person's personal account.) Manual deploy still works with `npx vercel deploy --prod`. `.vercelignore` keeps `server/` and the tests off the public site.
+
 ## WhatsApp delivery (OpenClaw)
 
 Every submitted report is queued (`outbox/` in Blob storage). A forwarder on the OpenClaw server (`server/`) asks `/api/outbox` every 30 seconds over HTTPS, downloads the generated PDF, posts it to the WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`, then marks it delivered. Nothing needs to be opened on the server, and the OpenClaw gateway and its config are untouched.
