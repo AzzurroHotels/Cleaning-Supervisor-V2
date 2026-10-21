@@ -1,0 +1,11 @@
+{
+  "regions": [
+    "syd1"
+  ],
+  "functions": {
+    "api/*.js": {
+      "includeFiles": "node_modules/@vercel/blob/dist/**",
+      "maxDuration": 60
+    }
+  }
+}

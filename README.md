@@ -1,6 +1,25 @@
 # Allen cleaning checklist
 
-Frontend-only hostel inspection checklist. No build tools, backend, account, analytics, credentials, or external services are required.
+Hostel inspection checklist with a small Vercel backend for submitting reports to management.
+
+## Hosting and backend
+
+Deployed on Vercel (static files plus `api/` functions) with a private Vercel Blob store. Inspectors sign in first (`INSPECTOR_ID` / `INSPECTOR_PASSWORD`); a signed 30-day token authorises uploads and submissions. They then tap **Submit to management**: photos/videos upload directly to Blob via `/api/upload`, then the report is posted to `/api/reports`. Managers open `/admin.html` and enter the password to view reports and attachments.
+
+- Env vars (Vercel project): `INSPECTOR_ID`, `INSPECTOR_PASSWORD`, `ADMIN_PASSWORD` (management password; endpoints stay closed if unset) and `BLOB_READ_WRITE_TOKEN` (added by the Blob store).
+- Deploy: `npx vercel deploy --prod`. Browser Blob client is bundled in `vendor/blob-client.js` (rebuild with `npx esbuild node_modules/@vercel/blob/dist/client.js --bundle --format=esm --minify --outfile=vendor/blob-client.js` after upgrading `@vercel/blob`).
+- Submitting requires the inspector login; viewing requires the management password. Changing either inspector value signs everyone out.
+
+## WhatsApp delivery (OpenClaw)
+
+Every submitted report is queued (`outbox/` in Blob storage). A forwarder on the OpenClaw server (`server/`) asks `/api/outbox` every 30 seconds over HTTPS, downloads the generated PDF, posts it to the WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`, then marks it delivered. Nothing needs to be opened on the server, and the OpenClaw gateway and its config are untouched.
+
+- The PDF (`api/_report-pdf.js`) has the overview and per-floor totals, sign-off and handover, every failed item with location, notes and embedded photos, all area notes, and the full item-by-item checklist. Videos are listed with a link to the manager page.
+- Vercel env var `OUTBOX_SECRET` must match `OUTBOX_SECRET` in `/etc/cleaning-report-forwarder.env` on the server, which also holds `OUTBOX_URL` and `WHATSAPP_GROUP` (the group's `...@g.us` ID).
+- Server install: `forwarder.mjs` in `/opt/cleaning-report-forwarder/`, systemd units from `server/`. Enable with `systemctl enable --now cleaning-report-forwarder.timer`; logs with `journalctl -u cleaning-report-forwarder`.
+- The forwarder keeps `/var/lib/cleaning-report-forwarder/sent.json` so a report is never posted twice, even if acknowledging it fails.
+
+The notes below describe the original front-end behaviour.
 
 ## Run
 
@@ -12,6 +31,8 @@ The checklist now has separate expandable sections for all 28 rooms, 17 shared f
 
 The room-by-room version uses a new local storage key (`allen-rooms-v2`). Previous general-checklist records are left untouched under the old key; blanket passes are not transferred to individual rooms.
 
+- Use the Ground / First / Second floor tabs to show one floor at a time (each tab shows its progress and failure count; the chosen tab is remembered).
+- Every room, bathroom, toilet and common area has a **Notes** box for any comment. Notes appear in the daily update, the saved report, the submitted report and the manager page.
 - Enter name and date, then choose Pass or Fail within each room or facility checklist.
 - Fail opens an accessible dialog. Location and notes are required; photos and videos are optional.
 - Attachments accept image/video files up to 20 MB each and 60 MB per failure. Playback depends on the browser's supported codecs; MP4 video and JPG/PNG photos are practical choices.
