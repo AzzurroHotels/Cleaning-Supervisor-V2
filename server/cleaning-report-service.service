@@ -9,9 +9,8 @@ WorkingDirectory=/opt/cleaning-report-service
 ExecStart=/usr/bin/node /opt/cleaning-report-service/service.mjs
 Restart=always
 RestartSec=5
-# Keep it small on a shared machine
-MemoryHigh=300M
-MemoryMax=450M
+# Soft limit only: the OpenClaw command used while sending briefly needs ~400 MB, and a hard cap could kill a send
+MemoryHigh=700M
 
 [Install]
 WantedBy=multi-user.target
