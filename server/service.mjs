@@ -64,7 +64,7 @@ const routes = {
   },
   async '/submit'({ meta: report }) {
     if (!report || typeof report !== 'object' || !ID.test(report.id || '') || !Array.isArray(report.failures)) throw Object.assign(new Error('Invalid report'), { code: 400 });
-    const photoIds = report.failures.flatMap(f => (f.media || []).map(m => m.id));
+    const photoIds = [...report.failures.flatMap(f => (f.media || []).map(m => m.id)), ...(report.areas || []).flatMap(a => (a.media || []).map(m => m.id))];
     for (const id of photoIds) {
       const row = ID.test(id) && db.prepare('SELECT report_id FROM photos WHERE id=?').get(id);
       if (!row || (row.report_id && row.report_id !== report.id)) throw Object.assign(new Error('A photo is missing. Please attach it again.'), { code: 400 });

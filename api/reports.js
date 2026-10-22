@@ -28,6 +28,9 @@ function clean(body) {
     floor: text(a.floor, 30),
     name: text(a.name, 200),
     note: text(a.note, 2000).trim(),
+    media: (Array.isArray(a.media) ? a.media : []).slice(0, 6)
+      .filter(m => UUID.test(String(m.id || '')))
+      .map(m => ({ id: m.id, type: ['image/jpeg', 'image/png'].includes(m.type) ? m.type : 'image/jpeg', name: text(m.name, 200) })),
     items: (Array.isArray(a.items) ? a.items : []).slice(0, 60).map(i => ({ text: text(i.text, 400), status: ['pass', 'fail'].includes(i.status) ? i.status : 'unchecked' })),
   }));
   const areaNotes = (Array.isArray(body.areaNotes) ? body.areaNotes : []).slice(0, 100)

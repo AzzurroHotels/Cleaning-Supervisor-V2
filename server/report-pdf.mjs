@@ -106,6 +106,29 @@ async function embed(pdf, bytes) {
   return null;
 }
 
+// Draws photos in a wrapping row; returns the entries that could not be drawn (videos, unreadable images).
+async function placePhotos(w, pdf, list, loadMedia, maxW, maxH) {
+  // A lone photo is shown large; two or more sit side by side at about 8.8 cm wide.
+  if (list.filter(m => m.type.startsWith('image/')).length === 1) { maxW = 400; maxH = 300; }
+  let x = M, rowH = 0;
+  const left = [];
+  if (list.some(m => m.type.startsWith('image/'))) w.y -= 4;
+  for (const m of list) {
+    if (!m.type.startsWith('image/')) { left.push(m); continue; }
+    let img = null;
+    try { img = await embed(pdf, await loadMedia(m.id)); } catch { /* listed instead */ }
+    if (!img) { left.push(m); continue; }
+    const s = Math.min(maxW / img.width, maxH / img.height, 1), iw = img.width * s, ih = img.height * s;
+    if (x + iw > RIGHT) { x = M; w.y -= rowH + 6; rowH = 0; }
+    if (w.y - ih < M + 14) { w.newPage(); x = M; rowH = 0; }
+    w.page.drawImage(img, { x, y: w.y - ih, width: iw, height: ih });
+    w.page.drawRectangle({ x, y: w.y - ih, width: iw, height: ih, borderColor: LINE, borderWidth: 0.6 });
+    x += iw + 10; rowH = Math.max(rowH, ih);
+  }
+  if (rowH) w.y -= rowH + 8;
+  return left;
+}
+
 // loadMedia(photoId) -> Uint8Array | null. Photos are embedded; videos are listed.
 export async function buildReportPdf(report, { loadMedia = async () => null, adminUrl = '' } = {}) {
   const pdf = await PDFDocument.create();
@@ -114,7 +137,7 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
   const { all, byFloor } = reportStats(report);
   const open = report.failures.filter(f => f.status === 'fail');
   const fixed = report.failures.filter(f => f.status === 'pass');
-  const attachments = report.failures.reduce((n, f) => n + f.media.length, 0);
+  const attachments = report.failures.reduce((n, f) => n + f.media.length, 0) + (report.areas || []).reduce((n, a) => n + (a.media || []).length, 0);
 
   // Title
   w.text('ALLEN HOSTEL', { size: 10, bold: true, color: GREEN, gap: 0 });
@@ -149,27 +172,14 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
   w.heading(`Failed items (${report.failures.length})`, { color: report.failures.length ? RED : GREEN });
   if (!report.failures.length) w.text('No failures were recorded.', { color: SOFT });
   for (const f of FLOORS.flatMap(fl => report.failures.filter(x => x.floor === fl)).concat(report.failures.filter(x => !FLOORS.includes(x.floor)))) {
-    w.need(70);
+    const shots = f.media.filter(m => m.type.startsWith('image/')).length;
+    w.need(shots ? 120 + (shots === 1 ? 300 : 190) : 70);          // keep a failure and its first photo(s) on one page
     w.text(`${f.floor}  /  ${f.area}`, { size: 10, bold: true, color: SOFT, gap: 1 });
     w.text(f.item, { size: 11, bold: true, gap: 2 });
     w.row('STATUS', f.status === 'fail' ? RED : GREEN, f.status === 'fail' ? 'FAILED - still to be fixed' : `Passed after recheck${f.recheckedAt ? ' (' + when(f.recheckedAt) + ')' : ''}`);
     w.row('LOCATION', INK, f.location);
     w.row('NOTES', INK, f.notes);
-    let x = M, rowH = 0;
-    const videos = [];
-    for (const m of f.media) {
-      if (!m.type.startsWith('image/')) { videos.push(m); continue; }
-      let img = null;
-      try { img = await embed(pdf, await loadMedia(m.id)); } catch { /* listed below instead */ }
-      if (!img) { videos.push(m); continue; }
-      const s = Math.min(250 / img.width, 190 / img.height, 1), iw = img.width * s, ih = img.height * s;
-      if (x + iw > RIGHT) { x = M; w.y -= rowH + 6; rowH = 0; }
-      if (w.y - ih < M + 14) { w.newPage(); x = M; rowH = 0; }
-      w.page.drawImage(img, { x, y: w.y - ih, width: iw, height: ih });
-      w.page.drawRectangle({ x, y: w.y - ih, width: iw, height: ih, borderColor: LINE, borderWidth: 0.6 });
-      x += iw + 10; rowH = Math.max(rowH, ih);
-    }
-    if (rowH) w.y -= rowH + 8;
+    const videos = await placePhotos(w, pdf, f.media, loadMedia, 250, 190);
     for (const m of videos) w.row(m.type.startsWith('video/') ? 'VIDEO' : 'FILE', SOFT, `${m.name || 'attachment'} - view in the manager page${adminUrl ? ': ' + adminUrl : ''}`);
     w.y -= 6;
     w.page.drawLine({ start: { x: M, y: w.y }, end: { x: RIGHT, y: w.y }, thickness: 0.4, color: LINE });
@@ -184,6 +194,17 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
     w.need(40);
     w.text(`${a.floor}  /  ${a.name}`, { size: 10, bold: true, gap: 1 });
     w.text(a.note, { size: 10, x: M + 8, gap: 6 });
+  }
+
+  // Room photos
+  const shot = (report.areas || []).filter(a => (a.media || []).length);
+  w.heading(`Room photos (${shot.reduce((n, a) => n + a.media.length, 0)})`);
+  if (!shot.length) w.text('No room photos were added.', { color: SOFT });
+  for (const a of shot) {
+    w.need(a.media.length === 1 ? 330 : 210);                       // title stays with its photo(s)
+    w.text(`${a.floor}  /  ${a.name}`, { size: 10, bold: true, gap: 3 });
+    await placePhotos(w, pdf, a.media, loadMedia, 250, 190);
+    w.y -= 4;
   }
 
   // Full checklist
@@ -202,6 +223,7 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
         w.row(ok ? 'PASS' : bad ? 'FAIL' : 'NOT CHECKED', ok ? GREEN : bad ? RED : SOFT, i.text, { size: 9 });
       }
       if (a.note) w.row('NOTE', AMBER, a.note, { size: 9 });
+      if ((a.media || []).length) w.row('PHOTOS', GREEN, `${a.media.length} photo(s) in the Room photos section`, { size: 9 });
       w.y -= 6;
     }
   }

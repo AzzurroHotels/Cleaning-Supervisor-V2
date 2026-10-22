@@ -108,6 +108,20 @@ test('bad uploads and bad reports are rejected', async () => {
   assert.equal((await call('/photo/' + randomUUID())).status, 404);
 });
 
+test('room photos are saved with the report and reach the PDF', async () => {
+  const up = await call('/photo', { name: 'room.png' }, PNG);
+  const report = reportWith(null);
+  report.areas[0].media = [{ id: up.reply.meta.id, type: 'image/png', name: 'room.png' }];
+  assert.equal((await call('/submit', report)).status, 200);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
+  const saved = (await call('/reports')).reply.meta.reports.find(r => r.id === report.id);
+  assert.equal(saved.areas[0].media[0].id, up.reply.meta.id);
+  assert((await call('/photo/' + up.reply.meta.id)).reply.bytes.equals(PNG));
+  const bad = reportWith(null);
+  bad.areas[0].media = [{ id: randomUUID(), type: 'image/png', name: 'x.png' }];
+  assert.equal((await call('/submit', bad)).status, 400);                                   // room photo that was never uploaded
+});
+
 test('a failed WhatsApp send is kept and retried when the manager resends', async () => {
   fs.writeFileSync(path.join(tmp, 'FAIL'), '');
   const report = reportWith(null);
