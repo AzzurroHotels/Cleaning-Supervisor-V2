@@ -5,13 +5,12 @@
   "description": "Frontend-only Allen Hostel cleaning inspection checklist",
   "type": "module",
   "scripts": {
-    "test": "node verify.cjs"
+    "test": "node verify.cjs && node --test server/"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
-    "@vercel/blob": "^2.8.2",
     "pdf-lib": "^1.17.1"
   }
 }

@@ -4,8 +4,7 @@
   ],
   "functions": {
     "api/*.js": {
-      "includeFiles": "node_modules/@vercel/blob/dist/**",
-      "maxDuration": 60
+      "maxDuration": 30
     }
   }
 }

@@ -11,13 +11,6 @@ export function isAdmin(req) {
   return same(bearer(req), expected);
 }
 
-// The WhatsApp forwarder on the OpenClaw server authenticates with OUTBOX_SECRET.
-export function isOutbox(req) {
-  const expected = process.env.OUTBOX_SECRET;
-  if (!expected) return false;
-  return same(bearer(req), expected);
-}
-
 // Inspectors sign in with INSPECTOR_ID / INSPECTOR_PASSWORD and get a signed 30-day token.
 // The signing key is derived from the credentials, so changing either one signs everyone out.
 const key = () => createHash('sha256').update(['inspector', process.env.INSPECTOR_ID, process.env.INSPECTOR_PASSWORD, process.env.ADMIN_PASSWORD].join('\0')).digest();

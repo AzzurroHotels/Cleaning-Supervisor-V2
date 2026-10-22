@@ -2,26 +2,23 @@
 
 Hostel inspection checklist with a small Vercel backend for submitting reports to management.
 
-## Hosting and backend
+## How it works
 
-Deployed on Vercel (static files plus `api/` functions) with a private Vercel Blob store. Inspectors sign in first (`INSPECTOR_ID` / `INSPECTOR_PASSWORD`); a signed 30-day token authorises uploads and submissions. They then tap **Submit to management**: photos/videos upload directly to Blob via `/api/upload`, then the report is posted to `/api/reports`. Managers open `/admin.html` and enter the password to view reports and attachments.
+- **Website** (Vercel, project `allen-cleaning-checklist`): the checklist, the inspector login (`/api/login`) and the manager page (`/admin.html`). It stores nothing itself.
+- **Report server** (the OpenClaw machine, `server/`): saves every submitted report in a SQLite database and every photo on disk, builds the detailed PDF, and posts it to the WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`. Failed sends are retried automatically (and can be re-sent from the manager page).
+- **Link between them:** the website calls the server through nginx at `http://<server>/cleaning-report/`. Every request and response is encrypted (AES-256-GCM) and signed (HMAC) with the shared `SERVER_SECRET` (`lib/seal.js`), because that hop is plain HTTP. Replays and stale requests are rejected.
+- Inspectors sign in first (`INSPECTOR_ID` / `INSPECTOR_PASSWORD`, a signed 30-day token). Each photo is shrunk on the phone to a JPEG and uploaded on its own (Vercel limits a request to 4.5 MB), then the report is submitted. Videos are not sent.
+- The PDF (`server/report-pdf.mjs`) has the overview and per-floor totals, sign-off and handover, every failed item with location, notes and embedded photos, all area notes, and the full item-by-item checklist.
 
-- Env vars (Vercel project): `INSPECTOR_ID`, `INSPECTOR_PASSWORD`, `ADMIN_PASSWORD` (management password; endpoints stay closed if unset) and `BLOB_READ_WRITE_TOKEN` (added by the Blob store).
-- Deploy: `npx vercel deploy --prod`. Browser Blob client is bundled in `vendor/blob-client.js` (rebuild with `npx esbuild node_modules/@vercel/blob/dist/client.js --bundle --format=esm --minify --outfile=vendor/blob-client.js` after upgrading `@vercel/blob`).
-- Submitting requires the inspector login; viewing requires the management password. Changing either inspector value signs everyone out.
+### Settings
+
+- Vercel env vars: `INSPECTOR_ID`, `INSPECTOR_PASSWORD`, `ADMIN_PASSWORD` (manager page), `SERVER_URL` (e.g. `http://<server-ip>/cleaning-report`), `SERVER_SECRET` (must equal the one on the server).
+- On the server, `/etc/cleaning-report-service.env` holds `SERVER_SECRET`, `WHATSAPP_GROUP` (the group's `...@g.us` ID), `PORT`, `DATA_DIR` and `SITE_URL`. Code is in `/opt/cleaning-report-service/`, data in `/var/lib/cleaning-report-service/` (`reports.db`, `photos/`; back this folder up). Service: `systemctl status cleaning-report-service`, logs: `journalctl -u cleaning-report-service`.
+- To rebuild the server bundle: `sh server/bundle.sh dist-server`, copy it to `/opt/cleaning-report-service/`, run `npm install --omit=dev` there and restart the service. Tests: `npm test` (starts the real server with a stand-in for `openclaw`).
 
 ## Deploying
 
-The Vercel project `allen-cleaning-checklist` is connected to the GitHub fork `VEDANSHSHAH/Cleaning-Supervisor-V2`: every push to its `main` deploys to production automatically. (The AzzurroHotels repo itself is not connected, because Vercel could not install its GitHub app on another person's personal account.) Manual deploy still works with `npx vercel deploy --prod`. `.vercelignore` keeps `server/` and the tests off the public site.
-
-## WhatsApp delivery (OpenClaw)
-
-Every submitted report is queued (`outbox/` in Blob storage). A forwarder on the OpenClaw server (`server/`) asks `/api/outbox` every 30 seconds over HTTPS, downloads the generated PDF, posts it to the WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`, then marks it delivered. Nothing needs to be opened on the server, and the OpenClaw gateway and its config are untouched.
-
-- The PDF (`api/_report-pdf.js`) has the overview and per-floor totals, sign-off and handover, every failed item with location, notes and embedded photos, all area notes, and the full item-by-item checklist. Videos are listed with a link to the manager page.
-- Vercel env var `OUTBOX_SECRET` must match `OUTBOX_SECRET` in `/etc/cleaning-report-forwarder.env` on the server, which also holds `OUTBOX_URL` and `WHATSAPP_GROUP` (the group's `...@g.us` ID).
-- Server install: `forwarder.mjs` in `/opt/cleaning-report-forwarder/`, systemd units from `server/`. Enable with `systemctl enable --now cleaning-report-forwarder.timer`; logs with `journalctl -u cleaning-report-forwarder`.
-- The forwarder keeps `/var/lib/cleaning-report-forwarder/sent.json` so a report is never posted twice, even if acknowledging it fails.
+The Vercel project is connected to the GitHub fork `VEDANSHSHAH/Cleaning-Supervisor-V2`: every push to its `main` deploys to production automatically. (The AzzurroHotels repo itself is not connected, because Vercel could not install its GitHub app on another person's personal account.) Manual deploy still works with `npx vercel deploy --prod`. `.vercelignore` keeps `server/` and the tests off the public site.
 
 The notes below describe the original front-end behaviour.
 

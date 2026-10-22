@@ -106,7 +106,7 @@ async function embed(pdf, bytes) {
   return null;
 }
 
-// loadMedia(pathname) -> Uint8Array | null. Photos are embedded; videos are listed.
+// loadMedia(photoId) -> Uint8Array | null. Photos are embedded; videos are listed.
 export async function buildReportPdf(report, { loadMedia = async () => null, adminUrl = '' } = {}) {
   const pdf = await PDFDocument.create();
   const fonts = { reg: await pdf.embedFont(StandardFonts.Helvetica), bold: await pdf.embedFont(StandardFonts.HelveticaBold) };
@@ -160,7 +160,7 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
     for (const m of f.media) {
       if (!m.type.startsWith('image/')) { videos.push(m); continue; }
       let img = null;
-      try { img = await embed(pdf, await loadMedia(m.pathname)); } catch { /* listed below instead */ }
+      try { img = await embed(pdf, await loadMedia(m.id)); } catch { /* listed below instead */ }
       if (!img) { videos.push(m); continue; }
       const s = Math.min(250 / img.width, 190 / img.height, 1), iw = img.width * s, ih = img.height * s;
       if (x + iw > RIGHT) { x = M; w.y -= rowH + 6; rowH = 0; }
@@ -213,3 +213,24 @@ export async function buildReportPdf(report, { loadMedia = async () => null, adm
 }
 
 export const reportFilename = report => `Allen-cleaning-report-${report.date}.pdf`;
+
+export function captionFor(report) {
+  const { all } = reportStats(report);
+  const open = report.failures.filter(f => f.status === 'fail');
+  const lines = [
+    '*Allen Hostel - cleaning inspection report*',
+    `Date: ${report.date}`,
+    `Passed ${all.pass} | Failed ${all.fail} | Not checked ${all.unchecked}`,
+  ];
+  if (open.length) {
+    lines.push('', `*Failed items (${open.length}):*`);
+    for (const f of open.slice(0, 6)) lines.push(`- ${f.floor} / ${f.area}: ${f.item}${f.location ? ' (' + f.location + ')' : ''}`);
+    if (open.length > 6) lines.push(`...and ${open.length - 6} more`);
+  } else {
+    lines.push('', 'No failed items.');
+  }
+  lines.push('', 'Full detail, notes and photos are in the attached PDF.');
+  let text = lines.join('\n');
+  if (text.length > 950) text = text.slice(0, 940).replace(/\n[^\n]*$/, '') + '\n...';
+  return text;
+}
