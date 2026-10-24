@@ -8,7 +8,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { DatabaseSync } from 'node:sqlite';
@@ -35,7 +35,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS reports(
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, date TEXT NOT NULL, data TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt INTEGER NOT NULL DEFAULT 0, last_error TEXT, sent_at TEXT);
+    next_attempt INTEGER NOT NULL DEFAULT 0, last_error TEXT, sent_at TEXT, content_hash TEXT);
   CREATE TABLE IF NOT EXISTS photos(
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, type TEXT NOT NULL, name TEXT, size INTEGER, report_id TEXT);
 `);
@@ -43,6 +43,33 @@ db.exec(`
 const MAX_BODY = 9 * 1024 * 1024, MAX_PHOTO = 6 * 1024 * 1024, MAX_ATTEMPTS = 8;
 const ID = /^[0-9a-f-]{36}$/;
 const seen = new Map();                                    // nonce -> expiry, blocks replayed requests
+
+// A fresh report ID is created by the web app for every request.  Do not use it
+// for duplicate detection: a second tap would otherwise look like a new report.
+// Photo IDs are also transient, so fingerprint the actual image bytes instead.
+const photoFingerprint = id => createHash('sha256').update(fs.readFileSync(path.join(photosDir, id))).digest('hex');
+const reportFingerprint = report => {
+  const media = list => (list || []).map(m => ({ type: m.type, image: photoFingerprint(m.id) }));
+  const value = {
+    name: report.name, date: report.date,
+    failures: report.failures.map(f => ({ id: f.id, status: f.status, floor: f.floor, area: f.area, item: f.item, recheckedAt: f.recheckedAt, location: f.location, notes: f.notes, media: media(f.media) })),
+    areas: (report.areas || []).map(a => ({ floor: a.floor, name: a.name, note: a.note, media: media(a.media), items: a.items })),
+    areaNotes: report.areaNotes || [], summary: report.summary,
+    recheck: report.recheck, handoverDone: report.handoverDone, handover: report.handover,
+  };
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+};
+
+// Existing installations predate content_hash. Backfill what can be read, then
+// let SQLite enforce the guard even when two requests arrive at once.
+try { db.exec('ALTER TABLE reports ADD COLUMN content_hash TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+for (const row of db.prepare('SELECT id,data FROM reports WHERE content_hash IS NULL ORDER BY created_at DESC').all()) {
+  try {
+    const hash = reportFingerprint(JSON.parse(row.data));
+    if (!db.prepare('SELECT 1 FROM reports WHERE content_hash=?').get(hash)) db.prepare('UPDATE reports SET content_hash=? WHERE id=?').run(hash, row.id);
+  } catch { /* Keep an unreadable legacy record unindexed rather than preventing startup. */ }
+}
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS reports_content_hash_unique ON reports(content_hash) WHERE content_hash IS NOT NULL');
 
 const readBody = req => new Promise((resolve, reject) => {
   const chunks = []; let size = 0;
@@ -69,12 +96,25 @@ const routes = {
       const row = ID.test(id) && db.prepare('SELECT report_id FROM photos WHERE id=?').get(id);
       if (!row || (row.report_id && row.report_id !== report.id)) throw Object.assign(new Error('A photo is missing. Please attach it again.'), { code: 400 });
     }
+    const contentHash = reportFingerprint(report);
+    const alreadySubmitted = db.prepare('SELECT id FROM reports WHERE content_hash=?').get(contentHash);
+    if (alreadySubmitted) return { meta: { id: alreadySubmitted.id, duplicate: true } };
     db.exec('BEGIN');
     try {
-      db.prepare('INSERT INTO reports(id,created_at,date,data) VALUES(?,?,?,?)').run(report.id, report.submittedAt, report.date, JSON.stringify(report));
+      db.prepare('INSERT INTO reports(id,created_at,date,data,content_hash) VALUES(?,?,?,?,?)').run(report.id, report.submittedAt, report.date, JSON.stringify(report), contentHash);
       for (const id of photoIds) db.prepare('UPDATE photos SET report_id=? WHERE id=?').run(report.id, id);
       db.exec('COMMIT');
-    } catch (err) { db.exec('ROLLBACK'); throw err.message.includes('UNIQUE') ? Object.assign(new Error('Report already submitted'), { code: 409 }) : err; }
+    } catch (err) {
+      db.exec('ROLLBACK');
+      // The unique index also covers the small race between the lookup above
+      // and the insert. Return the original report rather than queueing a resend.
+      if (err.message.includes('UNIQUE')) {
+        const existing = db.prepare('SELECT id FROM reports WHERE content_hash=?').get(contentHash);
+        if (existing) return { meta: { id: existing.id, duplicate: true } };
+        throw Object.assign(new Error('Report already submitted'), { code: 409 });
+      }
+      throw err;
+    }
     setImmediate(tick);
     return { meta: { id: report.id } };
   },

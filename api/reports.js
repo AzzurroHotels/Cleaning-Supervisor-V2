@@ -52,8 +52,8 @@ export default async function handler(req, res) {
     if (req.method === 'POST') {
       if (!inspectorAuthorized(req)) return res.status(401).json({ error: 'Sign in again' });
       const report = clean(req.body);
-      await callServer('/submit', report);
-      return res.status(201).json({ id: report.id });
+      const { meta } = await callServer('/submit', report);
+      return res.status(meta.duplicate ? 200 : 201).json({ id: meta.id, duplicate: !!meta.duplicate });
     }
     if (req.method === 'GET') {
       if (!isAdmin(req)) return res.status(401).json({ error: 'Wrong password' });

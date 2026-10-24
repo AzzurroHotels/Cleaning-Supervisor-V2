@@ -62,8 +62,9 @@ submitButton.onclick=async()=>{
     msg.textContent='Sending report…';
     const res=await fetch('/api/reports',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+inspectorToken()},body:JSON.stringify({date:state.date,summary:summary(),recheck:state.recheck,handoverDone:state.handoverDone,handover:state.handover,failures,areas:groups.map(([name,items,meta],g)=>({floor:meta.floor,name,note:(state.notes[g]||'').trim(),media:areaMedia[g]||[],items:items.map((text,n)=>({text,status:state.results[g+'-'+n]||'unchecked'}))})),areaNotes:groups.flatMap(([area,,meta],g)=>state.notes[g]?.trim()?[{floor:meta.floor,area,note:state.notes[g].trim()}]:[])})});
     if(res.status===401){expired();return}
-    if(!res.ok)throw Error((await res.json().catch(()=>({}))).error||'The server rejected the report.');
-    msg.textContent='Report submitted. The PDF will be posted to the WhatsApp group within a minute.'+(videos?' '+videos+' video(s) were not sent (only photos are sent); share them on WhatsApp if needed.':'');
+    const reply=await res.json().catch(()=>({}));
+    if(!res.ok)throw Error(reply.error||'The server rejected the report.');
+    msg.textContent=reply.duplicate?'This unchanged report was already submitted, so it was not sent to WhatsApp again.':'Report submitted. The PDF will be posted to the WhatsApp group within a minute.'+(videos?' '+videos+' video(s) were not sent (only photos are sent); share them on WhatsApp if needed.':'');
   }catch(err){
     msg.textContent='Could not submit: '+(err.message||'unknown error')+' Your checklist is still saved on this device.';
   }finally{submitButton.disabled=false}

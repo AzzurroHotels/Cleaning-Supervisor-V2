@@ -103,9 +103,31 @@ test('bad uploads and bad reports are rejected', async () => {
   assert.equal((await call('/submit', { id: 'nope' })).status, 400);
   const ok = reportWith(null);
   assert.equal((await call('/submit', ok)).status, 200);
-  assert.equal((await call('/submit', ok)).status, 409);                                    // same report twice
+  const repeated = await call('/submit', ok);
+  assert.equal(repeated.status, 200);
+  assert.equal(repeated.reply.meta.duplicate, true);                                        // same report is not queued twice
   assert.equal((await call('/nothing-here')).status, 404);
   assert.equal((await call('/photo/' + randomUUID())).status, 404);
+});
+
+test('an unchanged report is sent once, but a changed report is accepted', async () => {
+  const report = reportWith(null);
+  report.failures[0].notes = 'Fingerprint test: original finding';
+  assert.equal((await call('/submit', report)).status, 200);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
+
+  const repeat = { ...report, id: randomUUID(), submittedAt: new Date(Date.now() + 1000).toISOString() };
+  const duplicate = await call('/submit', repeat);
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.reply.meta.duplicate, true);
+  assert.equal(duplicate.reply.meta.id, report.id);
+  assert.equal((await call('/reports')).reply.meta.reports.some(r => r.id === repeat.id), false);
+
+  const changed = { ...repeat, id: randomUUID(), failures: repeat.failures.map(f => ({ ...f, notes: 'Glass has been cleaned' })) };
+  const accepted = await call('/submit', changed);
+  assert.equal(accepted.status, 200);
+  assert.equal(accepted.reply.meta.duplicate, undefined);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === changed.id)?.delivery.status === 'sent');
 });
 
 test('room photos are saved with the report and reach the PDF', async () => {
@@ -125,6 +147,7 @@ test('room photos are saved with the report and reach the PDF', async () => {
 test('a failed WhatsApp send is kept and retried when the manager resends', async () => {
   fs.writeFileSync(path.join(tmp, 'FAIL'), '');
   const report = reportWith(null);
+  report.failures[0].notes = 'Retry test finding';
   assert.equal((await call('/submit', report)).status, 200);
   const failed = await until(async () => { const r = (await call('/reports')).reply.meta.reports.find(x => x.id === report.id); return r.delivery.attempts >= 1 ? r : null; });
   assert.equal(failed.delivery.status, 'pending');
