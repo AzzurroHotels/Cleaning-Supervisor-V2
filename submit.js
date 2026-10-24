@@ -2,6 +2,19 @@
 // accepts at most 4.5 MB per request), then the report with references to the photos is posted to /api/reports.
 // The report server saves it and posts the PDF to WhatsApp.
 const submitButton=document.getElementById('submit');
+const resubmitDialog=document.getElementById('resubmit');
+
+function askToResubmit(changed){
+  const button=$('confirmResubmit');
+  $('resubmitInfo').textContent=changed?'Your checklist has changed since the last submission. A new report will be sent to management.':'No changes have been made since the last submission. Update the checklist before sending another report.';
+  button.disabled=!changed;
+  resubmitDialog.returnValue='cancel';
+  resubmitDialog.showModal();
+  return new Promise(resolve=>{
+    const closed=()=>{resubmitDialog.removeEventListener('close',closed);resolve(resubmitDialog.returnValue==='resubmit')};
+    resubmitDialog.addEventListener('close',closed);
+  });
+}
 
 async function shrink(blob,max=1600,quality=0.82){
   try{
@@ -21,7 +34,10 @@ submitButton.onclick=async()=>{
   const msg=$('msg');
   if(!inspectorToken()){showLogin('Sign in to submit your report.');return}
   if(!navigator.onLine){msg.textContent='No connection. Your checklist is saved on this device; submit once you are back online.';return}
-  if(!confirm('Submit this report to management?'))return;
+  const snapshot=reportSnapshot(),previous=typeof state.submittedSnapshot==='string'?state.submittedSnapshot:'';
+  if(previous){
+    if(!await askToResubmit(snapshot!==previous))return;
+  }else if(!confirm('Submit this report to management?'))return;
   submitButton.disabled=true;
   const expired=()=>{storeToken('');showLogin('Your session expired. Sign in again; your checklist is still saved.')};
   try{
@@ -64,6 +80,8 @@ submitButton.onclick=async()=>{
     if(res.status===401){expired();return}
     const reply=await res.json().catch(()=>({}));
     if(!res.ok)throw Error(reply.error||'The server rejected the report.');
+    state.submittedSnapshot=snapshot;
+    save();
     msg.textContent=reply.duplicate?'This unchanged report was already submitted, so it was not sent to WhatsApp again.':'Report submitted. The PDF will be posted to the WhatsApp group within a minute.'+(videos?' '+videos+' video(s) were not sent (only photos are sent); share them on WhatsApp if needed.':'');
   }catch(err){
     msg.textContent='Could not submit: '+(err.message||'unknown error')+' Your checklist is still saved on this device.';
