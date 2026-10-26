@@ -1,0 +1,16 @@
+[Unit]
+Description=Allen cleaning report server (saves reports, posts PDFs to WhatsApp via OpenClaw)
+After=network-online.target
+
+[Service]
+EnvironmentFile=/etc/cleaning-report-service.env
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+WorkingDirectory=/opt/cleaning-report-service
+ExecStart=/usr/bin/node /opt/cleaning-report-service/service.mjs
+Restart=always
+RestartSec=5
+# Soft limit only: the OpenClaw command used while sending briefly needs ~400 MB, and a hard cap could kill a send
+MemoryHigh=700M
+
+[Install]
+WantedBy=multi-user.target

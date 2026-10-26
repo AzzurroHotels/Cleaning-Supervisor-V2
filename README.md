@@ -1,6 +1,26 @@
 # Allen cleaning checklist
 
-Frontend-only hostel inspection checklist. No build tools, backend, account, analytics, credentials, or external services are required.
+Hostel inspection checklist with a small Vercel backend for submitting reports to management.
+
+## How it works
+
+- **Website** (Vercel, project `allen-cleaning-checklist`): the checklist, the inspector login (`/api/login`) and the manager page (`/admin.html`). It stores nothing itself.
+- **Report server** (the OpenClaw machine, `server/`): saves every submitted report in a SQLite database and every photo on disk, builds the detailed PDF, and posts it to each configured WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`. Failed sends are retried per group automatically (and can be re-sent from the manager page).
+- **Link between them:** the website calls the server through nginx at `http://<server>/cleaning-report/`. Every request and response is encrypted (AES-256-GCM) and signed (HMAC) with the shared `SERVER_SECRET` (`lib/seal.js`), because that hop is plain HTTP. Replays and stale requests are rejected.
+- Inspectors sign in first (`INSPECTOR_ID` / `INSPECTOR_PASSWORD`, a signed 30-day token). Each photo is shrunk on the phone to a JPEG and uploaded on its own (Vercel limits a request to 4.5 MB), then the report is submitted. Videos are not sent.
+- The PDF (`server/report-pdf.mjs`) has the overview and per-floor totals, sign-off and handover, every failed item with location, notes and embedded photos, all area notes, and the full item-by-item checklist.
+
+### Settings
+
+- Vercel env vars: `INSPECTOR_ID`, `INSPECTOR_PASSWORD`, `ADMIN_PASSWORD` (manager page), `SERVER_URL` (e.g. `http://<server-ip>/cleaning-report`), `SERVER_SECRET` (must equal the one on the server).
+- On the server, `/etc/cleaning-report-service.env` holds `SERVER_SECRET`, `WHATSAPP_GROUP` (one group's `...@g.us` ID), `PORT`, `DATA_DIR` and `SITE_URL`. By default every report also goes to the Cleaning Inspection group (`120363429178555205@g.us`). Set `WHATSAPP_GROUPS` (comma-separated, existing group first) to override the full list. A bare long group ID is accepted and becomes `...@g.us`. To find another group's ID, make the OpenClaw WhatsApp account a member first, then check `openclaw config get channels.whatsapp.groups` or `grep -rhoE '[0-9]{10,}@g[.]us' ~/.openclaw | sort -u`. Code is in `/opt/cleaning-report-service/`, data in `/var/lib/cleaning-report-service/` (`reports.db`, `photos/`; back this folder up). Service: `systemctl status cleaning-report-service`, logs: `journalctl -u cleaning-report-service`.
+- To rebuild the server bundle: `sh server/bundle.sh dist-server`, copy it to `/opt/cleaning-report-service/`, run `npm install --omit=dev` there and restart the service. Tests: `npm test` (starts the real server with a stand-in for `openclaw`).
+
+## Deploying
+
+The Vercel project is connected to the GitHub fork `VEDANSHSHAH/Cleaning-Supervisor-V2`: every push to its `main` deploys to production automatically. (The AzzurroHotels repo itself is not connected, because Vercel could not install its GitHub app on another person's personal account.) Manual deploy still works with `npx vercel deploy --prod`. `.vercelignore` keeps `server/` and the tests off the public site.
+
+The notes below describe the original front-end behaviour.
 
 ## Run
 
@@ -12,6 +32,8 @@ The checklist now has separate expandable sections for all 28 rooms, 17 shared f
 
 The room-by-room version uses a new local storage key (`allen-rooms-v2`). Previous general-checklist records are left untouched under the old key; blanket passes are not transferred to individual rooms.
 
+- Use the Ground / First / Second floor tabs to show one floor at a time (each tab shows its progress and failure count; the chosen tab is remembered).
+- Every room, bathroom, toilet and common area has a **Notes** box for any comment. Notes appear in the daily update, the saved report, the submitted report and the manager page.
 - Enter name and date, then choose Pass or Fail within each room or facility checklist.
 - Fail opens an accessible dialog. Location and notes are required; photos and videos are optional.
 - Attachments accept image/video files up to 20 MB each and 60 MB per failure. Playback depends on the browser's supported codecs; MP4 video and JPG/PNG photos are practical choices.

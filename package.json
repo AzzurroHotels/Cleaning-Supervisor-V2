@@ -3,6 +3,14 @@
   "version": "1.0.0",
   "private": true,
   "description": "Frontend-only Allen Hostel cleaning inspection checklist",
-  "scripts": { "test": "node verify.cjs" },
-  "engines": { "node": ">=18" }
+  "type": "module",
+  "scripts": {
+    "test": "node verify.cjs && node --test server/"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
+  }
 }
