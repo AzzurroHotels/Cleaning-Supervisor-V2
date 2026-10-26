@@ -16,6 +16,18 @@ function askToResubmit(changed){
   });
 }
 
+// Another tab may have submitted since this page was opened, so check the
+// saved checklist as well as the copy that is currently in memory.
+function submittedSnapshots(){
+  const list=[];
+  if(typeof state.submittedSnapshot==='string'&&state.submittedSnapshot)list.push(state.submittedSnapshot);
+  try{
+    const saved=JSON.parse(localStorage.getItem(key));
+    if(saved&&typeof saved.submittedSnapshot==='string'&&saved.submittedSnapshot&&!list.includes(saved.submittedSnapshot))list.push(saved.submittedSnapshot);
+  }catch{}
+  return list;
+}
+
 async function shrink(blob,max=1600,quality=0.82){
   try{
     const img=await createImageBitmap(blob);
@@ -34,14 +46,18 @@ submitButton.onclick=async()=>{
   const msg=$('msg');
   if(!inspectorToken()){showLogin('Sign in to submit your report.');return}
   if(!navigator.onLine){msg.textContent='No connection. Your checklist is saved on this device; submit once you are back online.';return}
-  const snapshot=reportSnapshot(),previous=typeof state.submittedSnapshot==='string'?state.submittedSnapshot:'';
-  if(previous){
-    if(!await askToResubmit(snapshot!==previous))return;
+  const snapshot=reportSnapshot(),previous=submittedSnapshots();
+  if(previous.length){
+    if(!await askToResubmit(!previous.includes(snapshot)))return;
   }else if(!confirm('Submit this report to management?'))return;
   submitButton.disabled=true;
   const expired=()=>{storeToken('');showLogin('Your session expired. Sign in again; your checklist is still saved.')};
   try{
-    const photos=Object.values(state.failures).reduce((n,f)=>n+f.media.filter(m=>m.type.startsWith('image/')).length,0)+Object.values(state.areaPhotos).reduce((n,l)=>n+l.length,0);
+    // Freeze the checklist now so the report and its snapshot describe exactly
+    // the same version. Edits made while photos upload stay unsent and are
+    // picked up by the next resubmission instead of being silently marked done.
+    const submitted=JSON.parse(JSON.stringify({date:state.date,results:state.results,failures:state.failures,notes:state.notes,areaPhotos:state.areaPhotos,recheck:state.recheck,handoverDone:state.handoverDone,handover:state.handover}));
+    const photos=Object.values(submitted.failures).reduce((n,f)=>n+f.media.filter(m=>m.type.startsWith('image/')).length,0)+Object.values(submitted.areaPhotos).reduce((n,l)=>n+l.length,0);
     let done=0,videos=0;const failures=[];
     const sendPhoto=async(blob,name)=>{
       msg.textContent='Uploading photo '+(++done)+' of '+photos+'…';
@@ -52,7 +68,7 @@ submitButton.onclick=async()=>{
       return {id:data.id,type:blob.type||'image/jpeg',name};
     };
     const areaMedia={};
-    for(const [g,list] of Object.entries(state.areaPhotos)){
+    for(const [g,list] of Object.entries(submitted.areaPhotos)){
       areaMedia[g]=[];
       for(const p of list){
         const blob=await getMedia(p.id);
@@ -62,7 +78,7 @@ submitButton.onclick=async()=>{
         areaMedia[g].push(sent);
       }
     }
-    for(const [id,f] of Object.entries(state.failures)){
+    for(const [id,f] of Object.entries(submitted.failures)){
       const media=[];
       for(const m of f.media){
         if(!m.type.startsWith('image/')){videos++;continue}
@@ -73,14 +89,17 @@ submitButton.onclick=async()=>{
         media.push(sent);
       }
       const [g,n]=id.split('-').map(Number);
-      failures.push({id,status:state.results[id],floor:groups[g][2].floor,area:groups[g][0],item:groups[g][1][n],recheckedAt:f.recheckedAt,location:f.location,notes:f.notes,media});
+      failures.push({id,status:submitted.results[id],floor:groups[g][2].floor,area:groups[g][0],item:groups[g][1][n],recheckedAt:f.recheckedAt,location:f.location,notes:f.notes,media});
     }
     msg.textContent='Sending report…';
-    const res=await fetch('/api/reports',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+inspectorToken()},body:JSON.stringify({date:state.date,summary:summary(),recheck:state.recheck,handoverDone:state.handoverDone,handover:state.handover,failures,areas:groups.map(([name,items,meta],g)=>({floor:meta.floor,name,note:(state.notes[g]||'').trim(),media:areaMedia[g]||[],items:items.map((text,n)=>({text,status:state.results[g+'-'+n]||'unchecked'}))})),areaNotes:groups.flatMap(([area,,meta],g)=>state.notes[g]?.trim()?[{floor:meta.floor,area,note:state.notes[g].trim()}]:[])})});
+    const report={date:submitted.date,summary:summary(submitted),recheck:submitted.recheck,handoverDone:submitted.handoverDone,handover:submitted.handover,failures,areas:groups.map(([name,items,meta],g)=>({floor:meta.floor,name,note:(submitted.notes[g]||'').trim(),media:areaMedia[g]||[],items:items.map((text,n)=>({text,status:submitted.results[g+'-'+n]||'unchecked'}))})),areaNotes:groups.flatMap(([area,,meta],g)=>submitted.notes[g]?.trim()?[{floor:meta.floor,area,note:submitted.notes[g].trim()}]:[])};
+    const sentSnapshot=reportSnapshot(submitted);
+    report.snapshot=sentSnapshot;
+    const res=await fetch('/api/reports',{method:'POST',headers:{'content-type':'application/json',authorization:'Bearer '+inspectorToken()},body:JSON.stringify(report)});
     if(res.status===401){expired();return}
     const reply=await res.json().catch(()=>({}));
     if(!res.ok)throw Error(reply.error||'The server rejected the report.');
-    state.submittedSnapshot=snapshot;
+    state.submittedSnapshot=sentSnapshot;
     save();
     msg.textContent=reply.duplicate?'This unchanged report was already submitted, so it was not sent to WhatsApp again.':'Report submitted. The PDF will be posted to the WhatsApp group within a minute.'+(videos?' '+videos+' video(s) were not sent (only photos are sent); share them on WhatsApp if needed.':'');
   }catch(err){

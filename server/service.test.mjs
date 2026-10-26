@@ -21,6 +21,13 @@ let server;
 const fake = path.join(tmp, 'openclaw');
 fs.writeFileSync(fake, `#!/bin/sh
 if [ -f "${tmp}/FAIL" ]; then echo "simulated WhatsApp failure" >&2; exit 1; fi
+if [ -f "${tmp}/FAIL_TARGET" ]; then
+  prev=""
+  for a in "$@"; do
+    if [ "$prev" = "--target" ] && [ "$a" = "$(cat "${tmp}/FAIL_TARGET")" ]; then echo "simulated group failure" >&2; exit 1; fi
+    prev="$a"
+  done
+fi
 echo "$@" >> "${tmp}/calls.log"
 for a in "$@"; do case "$a" in *.pdf) cp "$a" "${tmp}/last.pdf";; esac; done
 echo '[plugins] noise before the json'
@@ -54,7 +61,7 @@ const until = async (fn, ms = 20000) => {
 before(async () => {
   execFileSync('sh', [path.join(root, 'server', 'bundle.sh'), bundle], { stdio: 'ignore' });
   server = spawn(process.execPath, [path.join(bundle, 'service.mjs')], {
-    env: { ...process.env, SERVER_SECRET: SECRET, PORT: String(PORT), DATA_DIR: path.join(tmp, 'data'), WHATSAPP_GROUP: 'fake@g.us', OPENCLAW_BIN: fake },
+    env: { ...process.env, SERVER_SECRET: SECRET, PORT: String(PORT), DATA_DIR: path.join(tmp, 'data'), WHATSAPP_GROUPS: 'fake@g.us, 120363000000000000', OPENCLAW_BIN: fake },
     stdio: 'ignore',
   });
   await until(async () => { try { return (await fetch(BASE + '/health')).ok; } catch { return false; } });
@@ -70,6 +77,7 @@ test('a photo and a report are saved, and the PDF is posted to WhatsApp', async 
   await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
   const args = fs.readFileSync(path.join(tmp, 'calls.log'), 'utf8');
   assert.match(args, /message send --channel whatsapp --target fake@g\.us --media .*Allen-cleaning-report-2026-10-22\.pdf --message/);
+  assert.match(args, /message send --channel whatsapp --target 120363000000000000@g\.us --media .*Allen-cleaning-report-2026-10-22\.pdf --message/);
   assert.match(args, /Passed 1 \| Failed 1/);
   const pdf = fs.readFileSync(path.join(tmp, 'last.pdf'));
   assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
@@ -77,6 +85,7 @@ test('a photo and a report are saved, and the PDF is posted to WhatsApp', async 
   const saved = (await call('/reports')).reply.meta.reports.find(r => r.id === report.id);
   assert.equal(saved.failures[0].notes, 'Smudged glass');
   assert.equal(saved.areas[0].note, 'Mat replaced');
+  assert.deepEqual(saved.delivery.targets.map(t => [t.target, t.status]).sort(), [['120363000000000000@g.us', 'sent'], ['fake@g.us', 'sent']]);
   const photo = await call('/photo/' + up.reply.meta.id);
   assert.equal(photo.status, 200);
   assert.equal(photo.reply.meta.type, 'image/png');
@@ -130,6 +139,26 @@ test('an unchanged report is sent once, but a changed report is accepted', async
   await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === changed.id)?.delivery.status === 'sent');
 });
 
+test('an unchanged report stays a duplicate even when its photo is uploaded again with different bytes', async () => {
+  const first = await call('/photo', { name: 'a.png' }, PNG);
+  const report = reportWith(first.reply.meta.id);
+  report.failures[0].notes = 'Client snapshot dedupe test';
+  report.snapshotHash = 'a'.repeat(64);
+  assert.equal((await call('/submit', report)).status, 200);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
+
+  const again = await call('/photo', { name: 'a.png' }, Buffer.concat([PNG, Buffer.from([0])]));
+  const repeat = {
+    ...report, id: randomUUID(), submittedAt: new Date(Date.now() + 1000).toISOString(),
+    failures: report.failures.map(f => ({ ...f, media: [{ ...f.media[0], id: again.reply.meta.id }] })),
+  };
+  const duplicate = await call('/submit', repeat);
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.reply.meta.duplicate, true);
+  assert.equal(duplicate.reply.meta.id, report.id);
+  assert.equal((await call('/reports')).reply.meta.reports.some(r => r.id === repeat.id), false);
+});
+
 test('room photos are saved with the report and reach the PDF', async () => {
   const up = await call('/photo', { name: 'room.png' }, PNG);
   const report = reportWith(null);
@@ -154,5 +183,29 @@ test('a failed WhatsApp send is kept and retried when the manager resends', asyn
   assert.match(failed.delivery.error, /simulated WhatsApp failure/);
   fs.rmSync(path.join(tmp, 'FAIL'));
   assert.equal((await call('/resend', { id: report.id })).status, 200);
-  await until(async () => (await call('/reports')).reply.meta.reports.find(x => x.id === report.id).delivery.status === 'sent');
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id).delivery.status === 'sent');
+});
+
+test('a failure on one group does not resend to the group that already received it', async () => {
+  const calls = path.join(tmp, 'calls.log'), marker = path.join(tmp, 'FAIL_TARGET');
+  fs.writeFileSync(marker, '120363000000000000@g.us');
+  try {
+    const start = fs.existsSync(calls) ? fs.statSync(calls).size : 0;
+    const report = reportWith(null);
+    report.failures[0].notes = 'Per-group retry test';
+    assert.equal((await call('/submit', report)).status, 200);
+    const partial = await until(async () => {
+      const r = (await call('/reports')).reply.meta.reports.find(x => x.id === report.id);
+      const first = r.delivery.targets.find(t => t.target === 'fake@g.us'), second = r.delivery.targets.find(t => t.target === '120363000000000000@g.us');
+      return first.status === 'sent' && second.attempts >= 1 ? r : null;
+    });
+    assert.equal(partial.delivery.status, 'pending');
+    assert.match(partial.delivery.error, /simulated group failure/);
+    fs.rmSync(marker);
+    assert.equal((await call('/resend', { id: report.id })).status, 200);
+    await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id).delivery.status === 'sent');
+    const log = fs.readFileSync(calls, 'utf8').slice(start);
+    assert.equal((log.match(/--target fake@g\.us/g) || []).length, 1);      // successful group is not sent again
+    assert.equal((log.match(/--target 120363000000000000@g\.us/g) || []).length, 1);    // failed group is retried
+  } finally { fs.rmSync(marker, { force: true }); }
 });

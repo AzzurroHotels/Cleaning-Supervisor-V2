@@ -5,7 +5,7 @@ Hostel inspection checklist with a small Vercel backend for submitting reports t
 ## How it works
 
 - **Website** (Vercel, project `allen-cleaning-checklist`): the checklist, the inspector login (`/api/login`) and the manager page (`/admin.html`). It stores nothing itself.
-- **Report server** (the OpenClaw machine, `server/`): saves every submitted report in a SQLite database and every photo on disk, builds the detailed PDF, and posts it to the WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`. Failed sends are retried automatically (and can be re-sent from the manager page).
+- **Report server** (the OpenClaw machine, `server/`): saves every submitted report in a SQLite database and every photo on disk, builds the detailed PDF, and posts it to each configured WhatsApp group with `openclaw message send --channel whatsapp --target <group> --media <pdf>`. Failed sends are retried per group automatically (and can be re-sent from the manager page).
 - **Link between them:** the website calls the server through nginx at `http://<server>/cleaning-report/`. Every request and response is encrypted (AES-256-GCM) and signed (HMAC) with the shared `SERVER_SECRET` (`lib/seal.js`), because that hop is plain HTTP. Replays and stale requests are rejected.
 - Inspectors sign in first (`INSPECTOR_ID` / `INSPECTOR_PASSWORD`, a signed 30-day token). Each photo is shrunk on the phone to a JPEG and uploaded on its own (Vercel limits a request to 4.5 MB), then the report is submitted. Videos are not sent.
 - The PDF (`server/report-pdf.mjs`) has the overview and per-floor totals, sign-off and handover, every failed item with location, notes and embedded photos, all area notes, and the full item-by-item checklist.
@@ -13,7 +13,7 @@ Hostel inspection checklist with a small Vercel backend for submitting reports t
 ### Settings
 
 - Vercel env vars: `INSPECTOR_ID`, `INSPECTOR_PASSWORD`, `ADMIN_PASSWORD` (manager page), `SERVER_URL` (e.g. `http://<server-ip>/cleaning-report`), `SERVER_SECRET` (must equal the one on the server).
-- On the server, `/etc/cleaning-report-service.env` holds `SERVER_SECRET`, `WHATSAPP_GROUP` (the group's `...@g.us` ID), `PORT`, `DATA_DIR` and `SITE_URL`. Code is in `/opt/cleaning-report-service/`, data in `/var/lib/cleaning-report-service/` (`reports.db`, `photos/`; back this folder up). Service: `systemctl status cleaning-report-service`, logs: `journalctl -u cleaning-report-service`.
+- On the server, `/etc/cleaning-report-service.env` holds `SERVER_SECRET`, `WHATSAPP_GROUP` (one group's `...@g.us` ID), `PORT`, `DATA_DIR` and `SITE_URL`. By default every report also goes to the Cleaning Inspection group (`120363429178555205@g.us`). Set `WHATSAPP_GROUPS` (comma-separated, existing group first) to override the full list. A bare long group ID is accepted and becomes `...@g.us`. To find another group's ID, make the OpenClaw WhatsApp account a member first, then check `openclaw config get channels.whatsapp.groups` or `grep -rhoE '[0-9]{10,}@g[.]us' ~/.openclaw | sort -u`. Code is in `/opt/cleaning-report-service/`, data in `/var/lib/cleaning-report-service/` (`reports.db`, `photos/`; back this folder up). Service: `systemctl status cleaning-report-service`, logs: `journalctl -u cleaning-report-service`.
 - To rebuild the server bundle: `sh server/bundle.sh dist-server`, copy it to `/opt/cleaning-report-service/`, run `npm install --omit=dev` there and restart the service. Tests: `npm test` (starts the real server with a stand-in for `openclaw`).
 
 ## Deploying

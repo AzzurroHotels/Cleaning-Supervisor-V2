@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { inspectorAuthorized, isAdmin } from './_auth.js';
 import { callServer } from './_server.js';
 
@@ -11,6 +11,7 @@ function clean(body) {
   const name = text(body.name, 100).trim() || 'Inspector';
   const date = text(body.date, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('Invalid date');
+  const snapshot = text(body.snapshot, 200000);
   const failures = (Array.isArray(body.failures) ? body.failures : []).slice(0, 300).map(f => ({
     id: text(f.id, 20),
     status: f.status === 'pass' ? 'pass' : 'fail',
@@ -40,6 +41,7 @@ function clean(body) {
     id: randomUUID(),
     submittedAt: new Date().toISOString(),
     name, date, failures, areas, areaNotes,
+    snapshotHash: snapshot ? createHash('sha256').update(snapshot).digest('hex') : '',
     summary: text(body.summary, 200000),
     recheck: !!body.recheck,
     handoverDone: !!body.handoverDone,
