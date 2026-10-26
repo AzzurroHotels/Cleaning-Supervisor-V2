@@ -24,6 +24,8 @@ const {
   DATA_DIR = '/var/lib/cleaning-report-service',
   SITE_URL = 'https://allen-cleaning-checklist.vercel.app',
   OPENCLAW_BIN = 'openclaw',
+  RETRY_BASE_MS = '30000',
+  TICK_MS = '5000',
 } = process.env;
 if (!SERVER_SECRET || SERVER_SECRET.length < 24) { console.error('SERVER_SECRET (24+ characters) is required'); process.exit(1); }
 // The Cleaning Inspection group is included by default alongside WHATSAPP_GROUP.
@@ -36,6 +38,10 @@ const TARGETS = [...new Set(String(configuredTargets).split(',').map(t => groupT
 const DELIVERY_TARGETS = TARGETS.length ? TARGETS : [''];
 const PRIMARY_TARGET = WHATSAPP_GROUPS ? (TARGETS[0] || '') : (groupTarget(String(WHATSAPP_GROUP).trim()) || TARGETS[0] || '');
 if (!TARGETS.length) console.warn('WHATSAPP_GROUP(S) is not set: reports will be saved but cannot be sent');
+const RETRY_BASE = Number(RETRY_BASE_MS) || 30000;
+const TICK = Number(TICK_MS) || 5000;
+const MAX_ATTEMPTS = 8;
+const BUILD = '2026-10-26.3';
 
 const photosDir = path.join(DATA_DIR, 'photos'), outDir = path.join(DATA_DIR, 'out');
 fs.mkdirSync(photosDir, { recursive: true });
@@ -46,16 +52,16 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS reports(
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, date TEXT NOT NULL, data TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', attempts INTEGER NOT NULL DEFAULT 0,
-    next_attempt INTEGER NOT NULL DEFAULT 0, last_error TEXT, sent_at TEXT, content_hash TEXT, client_hash TEXT);
+    next_attempt INTEGER NOT NULL DEFAULT 0, last_error TEXT, sent_at TEXT, content_hash TEXT, client_hash TEXT, semantic_hash TEXT);
   CREATE TABLE IF NOT EXISTS photos(
     id TEXT PRIMARY KEY, created_at TEXT NOT NULL, type TEXT NOT NULL, name TEXT, size INTEGER, report_id TEXT);
   CREATE TABLE IF NOT EXISTS deliveries(
     report_id TEXT NOT NULL, target TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0, next_attempt INTEGER NOT NULL DEFAULT 0,
-    last_error TEXT, sent_at TEXT, PRIMARY KEY(report_id, target));
+    last_error TEXT, sent_at TEXT, sending_at TEXT, attempt_key TEXT, PRIMARY KEY(report_id, target));
 `);
 
-const MAX_BODY = 9 * 1024 * 1024, MAX_PHOTO = 6 * 1024 * 1024, MAX_ATTEMPTS = 8;
+const MAX_BODY = 9 * 1024 * 1024, MAX_PHOTO = 6 * 1024 * 1024;
 const ID = /^[0-9a-f-]{36}$/;
 const seen = new Map();                                    // nonce -> expiry, blocks replayed requests
 
@@ -74,11 +80,28 @@ const reportFingerprint = report => {
   };
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
 };
+// Same checklist and photo metadata, but ignores photo IDs and image bytes.
+// This catches unchanged resubmissions from clients that do not send a snapshot
+// and from reports saved before snapshots existed, even if a photo was re-encoded.
+const reportSemanticFingerprint = report => {
+  const media = list => (list || []).map(m => [m.type, m.name]);
+  const value = {
+    date: report.date,
+    failures: report.failures.map(f => [f.id, f.status, f.floor, f.area, f.item, f.recheckedAt, f.location, f.notes, media(f.media)]),
+    areas: (report.areas || []).map(a => [a.floor, a.name, a.note, media(a.media), a.items]),
+    areaNotes: report.areaNotes || [],
+    recheck: report.recheck, handoverDone: report.handoverDone, handover: report.handover,
+  };
+  return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+};
 
 // Existing installations predate content_hash. Backfill what can be read, then
 // let SQLite enforce the guard even when two requests arrive at once.
 try { db.exec('ALTER TABLE reports ADD COLUMN content_hash TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
 try { db.exec('ALTER TABLE reports ADD COLUMN client_hash TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+try { db.exec('ALTER TABLE reports ADD COLUMN semantic_hash TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+try { db.exec('ALTER TABLE deliveries ADD COLUMN sending_at TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
+try { db.exec('ALTER TABLE deliveries ADD COLUMN attempt_key TEXT'); } catch (err) { if (!/duplicate column name/i.test(err.message)) throw err; }
 for (const row of db.prepare('SELECT id,data FROM reports WHERE content_hash IS NULL ORDER BY created_at DESC').all()) {
   try {
     const hash = reportFingerprint(JSON.parse(row.data));
@@ -94,13 +117,18 @@ for (const row of db.prepare('SELECT id,data FROM reports WHERE client_hash IS N
     if (!db.prepare('SELECT 1 FROM reports WHERE client_hash=?').get(hash)) db.prepare('UPDATE reports SET client_hash=? WHERE id=?').run(hash, row.id);
   } catch { /* Keep an unreadable legacy record unindexed rather than preventing startup. */ }
 }
+for (const row of db.prepare('SELECT id,data FROM reports WHERE semantic_hash IS NULL').all()) {
+  try { db.prepare('UPDATE reports SET semantic_hash=? WHERE id=?').run(reportSemanticFingerprint(JSON.parse(row.data)), row.id); } catch { /* Unreadable legacy record. */ }
+}
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS reports_content_hash_unique ON reports(content_hash) WHERE content_hash IS NOT NULL');
 db.exec('CREATE UNIQUE INDEX IF NOT EXISTS reports_client_hash_unique ON reports(client_hash) WHERE client_hash IS NOT NULL');
+db.exec('CREATE INDEX IF NOT EXISTS reports_semantic_hash_idx ON reports(semantic_hash)');
 // Give reports saved before per-group tracking a delivery row for the original
 // group only, so adding a new group does not resend old reports to it.
 for (const r of db.prepare('SELECT id,status,attempts,next_attempt,last_error,sent_at FROM reports WHERE id NOT IN (SELECT report_id FROM deliveries)').all()) {
   db.prepare('INSERT OR IGNORE INTO deliveries(report_id,target,status,attempts,next_attempt,last_error,sent_at) VALUES(?,?,?,?,?,?,?)').run(r.id, PRIMARY_TARGET, r.status, r.attempts, r.next_attempt, r.last_error, r.sent_at);
 }
+
 
 const readBody = req => new Promise((resolve, reject) => {
   const chunks = []; let size = 0;
@@ -131,14 +159,23 @@ const routes = {
     // content hash alone can miss an unchanged resubmission. The snapshot hash
     // comes from the checklist itself and stays the same until something changes.
     const clientHash = typeof report.snapshotHash === 'string' && /^[0-9a-f]{64}$/.test(report.snapshotHash) ? report.snapshotHash : null;
-    const findExisting = () => clientHash
-      ? db.prepare('SELECT id FROM reports WHERE content_hash=? OR client_hash=?').get(contentHash, clientHash)
-      : db.prepare('SELECT id FROM reports WHERE content_hash=?').get(contentHash);
+    const semanticHash = reportSemanticFingerprint(report);
+    const findExisting = () => {
+      const exact = clientHash
+        ? db.prepare('SELECT id FROM reports WHERE content_hash=? OR client_hash=?').get(contentHash, clientHash)
+        : db.prepare('SELECT id FROM reports WHERE content_hash=?').get(contentHash);
+      if (exact) return exact;
+      // Old clients send no snapshot. New clients are compared only against
+      // reports saved before snapshots existed, so a real photo change is kept.
+      return clientHash
+        ? db.prepare('SELECT id FROM reports WHERE semantic_hash=? AND client_hash IS NULL LIMIT 1').get(semanticHash)
+        : db.prepare('SELECT id FROM reports WHERE semantic_hash=? LIMIT 1').get(semanticHash);
+    };
     const alreadySubmitted = findExisting();
     if (alreadySubmitted) return { meta: { id: alreadySubmitted.id, duplicate: true } };
     db.exec('BEGIN');
     try {
-      db.prepare('INSERT INTO reports(id,created_at,date,data,content_hash,client_hash) VALUES(?,?,?,?,?,?)').run(report.id, report.submittedAt, report.date, JSON.stringify(report), contentHash, clientHash);
+      db.prepare('INSERT INTO reports(id,created_at,date,data,content_hash,client_hash,semantic_hash) VALUES(?,?,?,?,?,?,?)').run(report.id, report.submittedAt, report.date, JSON.stringify(report), contentHash, clientHash, semanticHash);
       for (const target of DELIVERY_TARGETS) db.prepare('INSERT OR IGNORE INTO deliveries(report_id,target) VALUES(?,?)').run(report.id, target);
       for (const id of photoIds) db.prepare('UPDATE photos SET report_id=? WHERE id=?').run(report.id, id);
       db.exec('COMMIT');
@@ -170,9 +207,12 @@ const routes = {
     for (const target of DELIVERY_TARGETS) db.prepare('INSERT OR IGNORE INTO deliveries(report_id,target) VALUES(?,?)').run(meta.id, target);
     const deliveries = db.prepare('SELECT status FROM deliveries WHERE report_id=?').all(meta.id);
     if (deliveries.every(d => d.status === 'sent')) {
-      db.prepare("UPDATE deliveries SET status='pending', attempts=0, next_attempt=0, last_error=NULL, sent_at=NULL WHERE report_id=?").run(meta.id);
+      // Explicit full resend: clear the old marker so the worker sends again.
+      db.prepare("UPDATE deliveries SET status='pending', attempts=0, next_attempt=0, last_error=NULL, sent_at=NULL, sending_at=NULL, attempt_key=NULL WHERE report_id=?").run(meta.id);
     } else {
-      db.prepare("UPDATE deliveries SET status='pending', attempts=0, next_attempt=0, last_error=NULL WHERE report_id=? AND status!='sent'").run(meta.id);
+      // Leave an in-flight send alone; only retry pending/failed groups. Keep
+      // the previous attempt marker so it is checked before sending again.
+      db.prepare("UPDATE deliveries SET status='pending', attempts=0, next_attempt=0, last_error=NULL WHERE report_id=? AND status IN ('pending','failed')").run(meta.id);
     }
     refreshReport(meta.id);
     setImmediate(tick);
@@ -189,7 +229,7 @@ async function handle(req, res) {
   try {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end(JSON.stringify({ ok: true, pending: db.prepare("SELECT count(*) c FROM reports WHERE status='pending'").get().c }));
+      return res.end(JSON.stringify({ ok: true, build: BUILD, pending: db.prepare("SELECT count(*) c FROM reports WHERE status='pending'").get().c }));
     }
     if (req.method !== 'POST') return send(405, { error: 'Method not allowed' });
     const body = await readBody(req);
@@ -230,19 +270,102 @@ function refreshReport(id) {
     db.prepare("UPDATE reports SET status='sent', attempts=?, next_attempt=0, last_error=NULL, sent_at=? WHERE id=?").run(attempts, sentAt, id);
     return;
   }
-  if (rows.some(r => r.status === 'pending')) {
-    const pending = rows.filter(r => r.status === 'pending');
+  const active = rows.filter(r => r.status === 'pending' || r.status === 'sending');
+  if (active.length) {
+    const pending = active.filter(r => r.status === 'pending');
     const error = rows.filter(r => r.status !== 'sent').map(r => r.last_error).filter(Boolean).join(' | ').slice(0, 300) || null;
-    db.prepare("UPDATE reports SET status='pending', attempts=?, next_attempt=?, last_error=? WHERE id=?").run(attempts, Math.min(...pending.map(r => r.next_attempt)), error, id);
+    const next = pending.length ? Math.min(...pending.map(r => r.next_attempt)) : Date.now();
+    db.prepare("UPDATE reports SET status='pending', attempts=?, next_attempt=?, last_error=? WHERE id=?").run(attempts, next, error, id);
     return;
   }
   const error = rows.map(r => r.last_error).filter(Boolean).join(' | ').slice(0, 300) || 'WhatsApp delivery failed';
   db.prepare("UPDATE reports SET status='failed', attempts=?, next_attempt=0, last_error=? WHERE id=?").run(attempts, error, id);
 }
 
+// A killed/timed-out command, or a nonzero exit that still reported success,
+// may have delivered the PDF. Retrying those would duplicate it in the group.
+function sendWasUncertain(err) {
+  if (err.killed || err.signal) return true;
+  const output = String(err.stdout || '');
+  const json = output.slice(output.indexOf('{'));
+  if (!json) return false;
+  try {
+    const data = JSON.parse(json);
+    if (!data || typeof data !== 'object' || data.ok === false) return false;
+    return data.ok === true || !!(data.messageId || data.messageIds || data.id) || ['sent', 'delivered', 'ok'].includes(String(data.deliveryStatus || '').toLowerCase());
+  } catch { return false; }
+}
+
+// OpenClaw mirrors outbound sends into the agent/session transcript. The
+// attempt marker is in the PDF filename, so the transcript is a reliable flag:
+// true = delivered, false = not delivered, null = could not verify.
+async function deliveredByHistory(marker, target) {
+  if (!marker || !target) return null;
+  let sessions;
+  try {
+    const { stdout } = await run(OPENCLAW_BIN, ['sessions', '--all-agents', '--json'], { timeout: 20000, maxBuffer: 4 * 1024 * 1024 });
+    sessions = JSON.parse(stdout).sessions || [];
+  } catch { return null; }
+  const keys = new Set();
+  for (const s of sessions) {
+    const key = typeof s.key === 'string' ? s.key : '';
+    if (!key) continue;
+    if (key.includes(`whatsapp:group:${target}`) || key.endsWith(':main')) keys.add(key);
+  }
+  keys.add(`agent:main:whatsapp:group:${target}`);
+  keys.add('agent:main:main');
+  keys.add('global');
+  let checked = false, sawReport = false;
+  for (const sessionKey of [...keys].slice(0, 10)) {
+    try {
+      const { stdout } = await run(OPENCLAW_BIN, ['gateway', 'call', 'chat.history', '--params', JSON.stringify({ sessionKey }), '--json'], { timeout: 20000, maxBuffer: 8 * 1024 * 1024 });
+      checked = true;
+      if (stdout.includes(marker)) return true;
+      if (stdout.includes('Allen-cleaning-report-')) sawReport = true;
+    } catch { /* try the next session */ }
+  }
+  // Only claim "not sent" when the transcript actually mirrors report sends.
+  return checked && sawReport ? false : null;
+}
+
+function recordSent(id, target, note) {
+  try {
+    db.prepare("UPDATE deliveries SET status='sent', last_error=NULL, sent_at=? WHERE report_id=? AND target=? AND status='sending'").run(new Date().toISOString(), id, target);
+    console.log(`sent ${id} to ${target}${note ? ' (' + note + ')' : ''}`);
+    return true;
+  } catch (err) {
+    // The message is already in the group. Never retry if the record cannot be saved.
+    console.error(`sent ${id} to ${target} but could not save the delivery record: ${err.message}`);
+    try {
+      db.prepare("UPDATE deliveries SET status='failed', last_error=? WHERE report_id=? AND target=? AND status='sending'")
+        .run('Message may have been sent, but the delivery record could not be saved; check the group before resending.', id, target);
+    } catch {}
+    return false;
+  }
+}
+
+async function recoverInterrupted() {
+  const rows = db.prepare("SELECT report_id,target,attempt_key FROM deliveries WHERE status='sending'").all();
+  if (!rows.length) return;
+  for (const r of rows) {
+    const delivered = await deliveredByHistory(r.attempt_key, r.target);
+    if (delivered === true) {
+      recordSent(r.report_id, r.target, 'recovered after restart');
+    } else if (delivered === false) {
+      db.prepare("UPDATE deliveries SET status='pending', attempts=attempts+1, next_attempt=?, last_error=? WHERE report_id=? AND target=? AND status='sending'")
+        .run(Date.now() + RETRY_BASE, 'Service restarted before delivery was confirmed; retrying.', r.report_id, r.target);
+    } else {
+      db.prepare("UPDATE deliveries SET status='failed', next_attempt=0, last_error=? WHERE report_id=? AND target=? AND status='sending'")
+        .run('Delivery was interrupted and could not be verified; check the group before resending.', r.report_id, r.target);
+    }
+    refreshReport(r.report_id);
+  }
+  console.warn(`recovered ${rows.length} interrupted delivery row(s)`);
+}
+
 async function deliverReport(id, data) {
   const report = JSON.parse(data), dir = path.join(outDir, id);
-  const due = db.prepare("SELECT target,attempts FROM deliveries WHERE report_id=? AND status='pending' AND next_attempt<=? ORDER BY target").all(id, Date.now());
+  const due = db.prepare("SELECT target,attempts,attempt_key FROM deliveries WHERE report_id=? AND status='pending' AND next_attempt<=? ORDER BY target").all(id, Date.now());
   if (!due.length) return;
   let file = null, pdfError = null;
   try {
@@ -251,26 +374,70 @@ async function deliverReport(id, data) {
     file = path.join(dir, reportFilename(report));
     fs.writeFileSync(file, pdf);
   } catch (err) { pdfError = err; }
+  if (pdfError) {
+    const reason = `PDF could not be built: ${pdfError.message || pdfError}`.slice(0, 300);
+    for (const delivery of due) {
+      db.prepare("UPDATE deliveries SET status='failed', attempts=attempts+1, next_attempt=0, last_error=? WHERE report_id=? AND target=? AND status='pending'")
+        .run(reason, id, delivery.target);
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+    refreshReport(id);
+    return;
+  }
   for (const delivery of due) {
+    // Before retrying, check whether the previous attempt appeared late in the
+    // transcript. If it did, never send it again.
+    if (delivery.attempt_key) {
+      const previous = await deliveredByHistory(delivery.attempt_key, delivery.target);
+      if (previous === true) {
+        const marked = db.prepare("UPDATE deliveries SET status='sent', last_error=NULL, sent_at=? WHERE report_id=? AND target=? AND status='pending'").run(new Date().toISOString(), id, delivery.target);
+        if (marked.changes) console.log(`sent ${id} to ${delivery.target} (previous attempt verified)`);
+        continue;
+      }
+    }
+    // The marker makes this exact attempt identifiable in the transcript.
+    const marker = randomUUID().replace(/-/g, '').slice(0, 10);
+    // Claim this group atomically. A second worker (or a repeated tick) cannot
+    // send the same group twice.
+    const claimed = db.prepare("UPDATE deliveries SET status='sending', sending_at=?, attempt_key=? WHERE report_id=? AND target=? AND status='pending'").run(new Date().toISOString(), marker, id, delivery.target);
+    if (!claimed.changes) continue;
+    const targetFile = file.replace(/\.pdf$/i, `-${marker}.pdf`);
+    let sent = false;
     try {
-      if (pdfError) throw pdfError;
       if (!delivery.target) throw new Error('WHATSAPP_GROUP(S) is not set');
-      const { stdout } = await run(OPENCLAW_BIN, ['message', 'send', '--channel', 'whatsapp', '--target', delivery.target, '--media', file, '--message', captionFor(report), '--json'], { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
+      fs.copyFileSync(file, targetFile);
+      const { stdout } = await run(OPENCLAW_BIN, ['message', 'send', '--channel', 'whatsapp', '--target', delivery.target, '--media', targetFile, '--message', captionFor(report), '--json'], { timeout: 180000, maxBuffer: 10 * 1024 * 1024 });
       const json = stdout.slice(stdout.indexOf('{'));
       let failure = null;
       try { if (JSON.parse(json).ok === false) failure = json.slice(0, 300); } catch { /* output was not JSON: treat the zero exit code as success */ }
       if (failure) throw new Error(failure);
-      db.prepare("UPDATE deliveries SET status='sent', last_error=NULL, sent_at=? WHERE report_id=? AND target=?").run(new Date().toISOString(), id, delivery.target);
-      console.log(`sent ${id} to ${delivery.target}`);
+      sent = true;
     } catch (err) {
       const attempts = delivery.attempts + 1;
-      // Prefer what OpenClaw itself printed over "Command failed: <long command line>"
+      let delivered = sendWasUncertain(err) ? true : null;
+      if (delivered === null) {
+        for (let i = 0; i < 3 && delivered !== true; i++) {
+          if (i) await new Promise(resolve => setTimeout(resolve, 2000));
+          const check = await deliveredByHistory(marker, delivery.target);
+          if (check === true) delivered = true;
+          else if (check === false) delivered = false;
+        }
+      }
       const said = String(err.stderr || err.stdout || '').split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('[plugins]')).slice(-2).join(' | ');
-      const reason = ((delivery.target ? delivery.target + ': ' : '') + (said || err.message)).slice(0, 300);
-      db.prepare('UPDATE deliveries SET status=?, attempts=?, next_attempt=?, last_error=? WHERE report_id=? AND target=?')
-        .run(attempts >= MAX_ATTEMPTS ? 'failed' : 'pending', attempts, Date.now() + Math.min(2 ** attempts * 30000, 3600000), reason, id, delivery.target);
-      console.error(`delivery of ${id} to ${delivery.target || '(not configured)'} failed (attempt ${attempts}): ${reason}`);
+      if (delivered === true) {
+        recordSent(id, delivery.target, 'verified from transcript');
+        continue;
+      }
+      const retry = delivered === false && attempts < MAX_ATTEMPTS && !err.killed && !err.signal;
+      const note = retry
+        ? 'Send failed and was not found in the group; retrying automatically. '
+        : ((delivered === false ? 'Send failed and could not be confirmed; ' : 'Send result could not be verified; ') + 'check the group before resending. ');
+      const reason = ((delivery.target ? delivery.target + ': ' : '') + note + (said || err.message)).slice(0, 300);
+      db.prepare("UPDATE deliveries SET status=?, attempts=?, next_attempt=?, last_error=? WHERE report_id=? AND target=? AND status='sending'")
+        .run(retry ? 'pending' : 'failed', attempts, retry ? Date.now() + Math.min(2 ** attempts * RETRY_BASE, 3600000) : 0, reason, id, delivery.target);
+      console.error(`delivery of ${id} to ${delivery.target || '(not configured)'} ${retry ? 'not found; retrying' : 'needs a manual check'} (attempt ${attempts}): ${reason}`);
     }
+    if (sent) recordSent(id, delivery.target);
   }
   fs.rmSync(dir, { recursive: true, force: true });
   refreshReport(id);
@@ -286,12 +453,27 @@ async function tick() {
     if (row) await deliverReport(row.id, row.data);
   } catch (err) { console.error(`worker: ${err.message}`); } finally { busy = false; }
 }
-setInterval(tick, 5000);
-setInterval(() => {                                       // drop photos that were uploaded but never attached to a report
+await recoverInterrupted();
+const tickTimer = setInterval(tick, TICK);
+const cleanupTimer = setInterval(() => {                    // drop photos that were uploaded but never attached to a report
   for (const p of db.prepare("SELECT id FROM photos WHERE report_id IS NULL AND created_at < ?").all(new Date(Date.now() - 24 * 3600000).toISOString())) {
     fs.rmSync(path.join(photosDir, p.id), { force: true });
     db.prepare('DELETE FROM photos WHERE id=?').run(p.id);
   }
 }, 3600000);
 
-http.createServer(handle).listen(Number(PORT), '127.0.0.1', () => console.log(`report server on 127.0.0.1:${PORT}, data in ${DATA_DIR}`));
+// Finish an in-flight send on a normal restart, but never retry it blindly.
+let stopping = false;
+function shutdown() {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(tickTimer);
+  clearInterval(cleanupTimer);
+  if (!busy) return process.exit(0);
+  const wait = setInterval(() => { if (!busy) { clearInterval(wait); process.exit(0); } }, 100);
+  setTimeout(() => { clearInterval(wait); process.exit(1); }, 15000).unref();
+}
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+
+http.createServer(handle).listen(Number(PORT), '127.0.0.1', () => console.log(`report server build ${BUILD} on 127.0.0.1:${PORT}, data in ${DATA_DIR}`));

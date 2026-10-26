@@ -19,19 +19,41 @@ const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR
 let server;
 
 const fake = path.join(tmp, 'openclaw');
-fs.writeFileSync(fake, `#!/bin/sh
-if [ -f "${tmp}/FAIL" ]; then echo "simulated WhatsApp failure" >&2; exit 1; fi
-if [ -f "${tmp}/FAIL_TARGET" ]; then
-  prev=""
-  for a in "$@"; do
-    if [ "$prev" = "--target" ] && [ "$a" = "$(cat "${tmp}/FAIL_TARGET")" ]; then echo "simulated group failure" >&2; exit 1; fi
-    prev="$a"
-  done
-fi
-echo "$@" >> "${tmp}/calls.log"
-for a in "$@"; do case "$a" in *.pdf) cp "$a" "${tmp}/last.pdf";; esac; done
-echo '[plugins] noise before the json'
-echo '{"ok": true}'
+fs.writeFileSync(fake, `#!${process.execPath}
+const fs=require('node:fs'), path=require('node:path');
+const tmp=${JSON.stringify(tmp)};
+const args=process.argv.slice(2);
+const flag=name=>fs.existsSync(path.join(tmp,name));
+const read=name=>flag(name)?fs.readFileSync(path.join(tmp,name),'utf8').trim():'';
+const opt=name=>{const i=args.indexOf(name);return i>=0?args[i+1]:'';};
+const target=opt('--target'), media=opt('--media'), delivered=path.join(tmp,'delivered.jsonl');
+const record=()=>fs.appendFileSync(delivered,JSON.stringify({target,file:path.basename(media||'')})+'\\n');
+if(args[0]==='sessions'){
+  console.log(JSON.stringify({sessions:['fake@g.us','120363000000000000@g.us'].map(t=>({key:'agent:main:whatsapp:group:'+t}))}));
+  process.exit(0);
+}
+if(args[0]==='gateway'&&args[1]==='call'&&args[2]==='chat.history'){
+  const params=JSON.parse(opt('--params')||'{}'), key=String(params.sessionKey||'');
+  const group=key.split('whatsapp:group:').pop();
+  const rows=flag('delivered.jsonl')?fs.readFileSync(delivered,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse):[];
+  console.log(JSON.stringify({messages:rows.filter(x=>x.target===group).map(x=>({text:x.file}))}));
+  process.exit(0);
+}
+if(args[0]!=='message'||args[1]!=='send'){console.error('unexpected command');process.exit(2);}
+fs.appendFileSync(path.join(tmp,'attempts.log'),args.join(' ')+'\\n');
+if(flag('FAIL')){console.error('simulated WhatsApp failure');process.exit(1);}
+if(flag('FAIL_TARGET')&&target===read('FAIL_TARGET')){console.error('simulated group failure');process.exit(1);}
+if(flag('UNCERTAIN_TARGET')&&target===read('UNCERTAIN_TARGET')&&flag('UNCERTAIN_UNSENT')){console.error('simulated uncertain failure');process.exit(1);}
+if(flag('UNCERTAIN_TARGET')&&target===read('UNCERTAIN_TARGET')&&flag('UNCERTAIN_SENT')){
+  record();
+  console.error('simulated uncertain result after delivery');
+  process.exit(1);
+}
+fs.appendFileSync(path.join(tmp,'calls.log'),args.join(' ')+'\\n');
+record();
+if(media) fs.copyFileSync(media,path.join(tmp,'last.pdf'));
+console.log('[plugins] noise before the json');
+console.log('{"ok": true}');
 `, { mode: 0o755 });
 
 async function call(route, meta = {}, bytes = Buffer.alloc(0), tweak = {}) {
@@ -67,7 +89,15 @@ before(async () => {
   await until(async () => { try { return (await fetch(BASE + '/health')).ok; } catch { return false; } });
 });
 
-after(() => { server?.kill(); fs.rmSync(tmp, { recursive: true, force: true }); fs.rmSync(bundle, { recursive: true, force: true }); });
+after(async () => {
+  if (server) {
+    const done = new Promise(resolve => server.once('exit', resolve));
+    server.kill();
+    await Promise.race([done, new Promise(resolve => { const t = setTimeout(resolve, 5000); t.unref(); })]);
+  }
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(bundle, { recursive: true, force: true });
+});
 
 test('a photo and a report are saved, and the PDF is posted to WhatsApp', async () => {
   const up = await call('/photo', { name: 'a.png' }, PNG);
@@ -76,8 +106,8 @@ test('a photo and a report are saved, and the PDF is posted to WhatsApp', async 
   assert.equal((await call('/submit', report)).status, 200);
   await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
   const args = fs.readFileSync(path.join(tmp, 'calls.log'), 'utf8');
-  assert.match(args, /message send --channel whatsapp --target fake@g\.us --media .*Allen-cleaning-report-2026-10-22\.pdf --message/);
-  assert.match(args, /message send --channel whatsapp --target 120363000000000000@g\.us --media .*Allen-cleaning-report-2026-10-22\.pdf --message/);
+  assert.match(args, /message send --channel whatsapp --target fake@g\.us --media .*Allen-cleaning-report-2026-10-22-[0-9a-f]+\.pdf --message/);
+  assert.match(args, /message send --channel whatsapp --target 120363000000000000@g\.us --media .*Allen-cleaning-report-2026-10-22-[0-9a-f]+\.pdf --message/);
   assert.match(args, /Passed 1 \| Failed 1/);
   const pdf = fs.readFileSync(path.join(tmp, 'last.pdf'));
   assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
@@ -159,6 +189,31 @@ test('an unchanged report stays a duplicate even when its photo is uploaded agai
   assert.equal((await call('/reports')).reply.meta.reports.some(r => r.id === repeat.id), false);
 });
 
+test('legacy reports are deduped by checklist and photo metadata even when photos are re-encoded', async () => {
+  const first = await call('/photo', { name: 'a.png' }, PNG);
+  const report = reportWith(first.reply.meta.id);
+  report.failures[0].notes = 'Legacy semantic test';
+  assert.equal((await call('/submit', report)).status, 200);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === report.id)?.delivery.status === 'sent');
+
+  const again = await call('/photo', { name: 'a.png' }, Buffer.concat([PNG, Buffer.from([0])]));
+  const repeat = {
+    ...report, id: randomUUID(), submittedAt: new Date(Date.now() + 1000).toISOString(),
+    failures: report.failures.map(f => ({ ...f, media: [{ ...f.media[0], id: again.reply.meta.id }] })),
+  };
+  const duplicate = await call('/submit', repeat);
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.reply.meta.duplicate, true);
+  assert.equal(duplicate.reply.meta.id, report.id);
+
+  const changed = {
+    ...repeat, id: randomUUID(), snapshotHash: 'b'.repeat(64),
+    failures: repeat.failures.map(f => ({ ...f, notes: 'Legacy semantic test changed' })),
+  };
+  assert.equal((await call('/submit', changed)).status, 200);
+  await until(async () => (await call('/reports')).reply.meta.reports.find(r => r.id === changed.id)?.delivery.status === 'sent');
+});
+
 test('room photos are saved with the report and reach the PDF', async () => {
   const up = await call('/photo', { name: 'room.png' }, PNG);
   const report = reportWith(null);
@@ -208,4 +263,56 @@ test('a failure on one group does not resend to the group that already received 
     assert.equal((log.match(/--target fake@g\.us/g) || []).length, 1);      // successful group is not sent again
     assert.equal((log.match(/--target 120363000000000000@g\.us/g) || []).length, 1);    // failed group is retried
   } finally { fs.rmSync(marker, { force: true }); }
+});
+
+test('an uncertain send that reached the group is marked sent and not retried', async () => {
+  const target = '120363000000000000@g.us', marker = path.join(tmp, 'UNCERTAIN_TARGET'), sent = path.join(tmp, 'UNCERTAIN_SENT'), attempts = path.join(tmp, 'attempts.log');
+  fs.writeFileSync(marker, target);
+  fs.writeFileSync(sent, '1');
+  try {
+    const start = fs.existsSync(attempts) ? fs.statSync(attempts).size : 0;
+    const report = reportWith(null);
+    report.failures[0].notes = 'Uncertain delivered test';
+    assert.equal((await call('/submit', report)).status, 200);
+    const finished = await until(async () => {
+      const r = (await call('/reports')).reply.meta.reports.find(x => x.id === report.id);
+      return r.delivery.targets.find(t => t.target === target)?.status === 'sent' ? r : null;
+    });
+    assert.equal(finished.delivery.status, 'sent');
+    await new Promise(resolve => setTimeout(resolve, 6000));                    // allow at least one worker interval
+    const log = fs.readFileSync(attempts, 'utf8').slice(start);
+    assert.equal((log.match(new RegExp('--target ' + target.replace('.', '\\.'), 'g')) || []).length, 1);
+    assert.equal((log.match(/--target fake@g\.us/g) || []).length, 1);
+  } finally {
+    fs.rmSync(marker, { force: true });
+    fs.rmSync(sent, { force: true });
+  }
+});
+
+test('an uncertain send that was not delivered is retried', async () => {
+  const target = '120363000000000000@g.us', marker = path.join(tmp, 'UNCERTAIN_TARGET'), unsent = path.join(tmp, 'UNCERTAIN_UNSENT'), attempts = path.join(tmp, 'attempts.log');
+  fs.writeFileSync(marker, target);
+  fs.writeFileSync(unsent, '1');
+  try {
+    const start = fs.existsSync(attempts) ? fs.statSync(attempts).size : 0;
+    const report = reportWith(null);
+    report.failures[0].notes = 'Uncertain retry test';
+    assert.equal((await call('/submit', report)).status, 200);
+    const pending = await until(async () => {
+      const r = (await call('/reports')).reply.meta.reports.find(x => x.id === report.id);
+      const t = r.delivery.targets.find(t => t.target === target);
+      return t.status === 'pending' && t.attempts >= 1 ? r : null;
+    });
+    assert.match(pending.delivery.error, /not found|retrying/i);
+    fs.rmSync(marker);
+    fs.rmSync(unsent);
+    assert.equal((await call('/resend', { id: report.id })).status, 200);
+    await until(async () => (await call('/reports')).reply.meta.reports.find(x => x.id === report.id).delivery.status === 'sent');
+    const log = fs.readFileSync(attempts, 'utf8').slice(start);
+    assert.equal((log.match(new RegExp('--target ' + target.replace('.', '\\.'), 'g')) || []).length, 2); // failed, then retried
+    assert.equal((log.match(/--target fake@g\.us/g) || []).length, 1);
+  } finally {
+    fs.rmSync(marker, { force: true });
+    fs.rmSync(unsent, { force: true });
+  }
 });
